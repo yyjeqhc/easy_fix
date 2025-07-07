@@ -45,12 +45,14 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# 创建OBS包
-create_obs_packages() {
-    log_info "开始创建OBS包..."
-    
-    for branch in "${BRANCHES[@]}"; do
-        local package_name="${PACKAGE_BASE_NAME}-${branch}"
+create_obs_package() {
+    if [ $# -ne 1 ]; then
+        echo "用法: create_obs_package branch_name"
+        return 1
+    fi
+
+    local branch="$1";
+    local package_name="${PACKAGE_BASE_NAME}-${branch}"
         log_info "创建OBS包: $package_name"
         
         # 创建包元数据
@@ -90,15 +92,31 @@ EOF
         rm -f "/tmp/obs_service_${PACKAGE_BASE_NAME}_${branch}_$$"
         
         log_info "OBS包创建完成: $package_name"
-    done
+}
+# 创建OBS包
+create_obs_packages() {
+    log_info "开始创建OBS包..."
+    if [ $# -gt 0 ]; then
+        for arg in "$@"; do
+            echo "处理参数：$arg"
+            create_obs_package $arg
+        done
+    else
+        for branch in "${BRANCHES[@]}"; do
+            create_obs_package "$branch"
+        done
+    fi
 }
 
-# 创建EulerMaker包
-create_euler_packages() {
-    log_info "开始创建EulerMaker包..."
-    
-    for branch in "${BRANCHES[@]}"; do
-        local package_name="${PACKAGE_BASE_NAME}-${branch}"
+create_euler_package() {
+    if [ $# -ne 1 ]; then
+        echo "用法: create_euler_package branch_name"
+        return 1
+    fi
+
+    local branch="$1";
+
+    local package_name="${PACKAGE_BASE_NAME}-${branch}"
         log_info "创建EulerMaker包: $package_name"
         
         # 创建包的JSON配置
@@ -130,58 +148,127 @@ EOF
         
         # 清理临时文件
         rm -f "/tmp/euler_config_${PACKAGE_BASE_NAME}_${branch}_$$"
-    done
+}
+# 创建EulerMaker包
+create_euler_packages() {
+    log_info "开始创建EulerMaker包..."
+    
+    if [ $# -gt 0 ]; then
+        for arg in "$@"; do
+            echo "处理参数：$arg"
+            create_euler_package $arg
+        done
+    else
+        for branch in "${BRANCHES[@]}"; do
+            create_euler_package "$branch"
+        done
+    fi
 }
 
 # 查询OBS构建状态
 query_obs_status() {
     log_info "查询OBS构建状态..."
-    
-    for branch in "${BRANCHES[@]}"; do
-        local package_name="${PACKAGE_BASE_NAME}-${branch}"
-        log_info "查询OBS包状态: $package_name"
-        osc results "$OBS_PROJECT" "$package_name" || true
-        echo "---"
-    done
+    local package_name
+    if [ $# -gt 0 ]; then
+        for arg in "$@"; do
+            package_name="${PACKAGE_BASE_NAME}-${arg}"
+            log_info "查询OBS包状态: $package_name"
+            osc results "$OBS_PROJECT" "$package_name" || true
+            echo "---"
+        done
+    else
+        for branch in "${BRANCHES[@]}"; do
+            package_name="${PACKAGE_BASE_NAME}-${branch}"
+            log_info "查询OBS包状态: $package_name"
+            osc results "$OBS_PROJECT" "$package_name" || true
+            echo "---"
+        done
+    fi
 }
 
+#obs进行构建包
+build_obs() {
+    log_info "在OSB平台进行构建..."
+    local package_name
+    if [ $# -gt 0 ]; then
+        for arg in "$@"; do
+            package_name="${PACKAGE_BASE_NAME}-${arg}"
+            osc rebuildpac $OBS_PROJECT $package_name
+        done
+    else
+        for branch in "${BRANCHES[@]}"; do
+            package_name="${PACKAGE_BASE_NAME}-${branch}"
+            osc rebuildpac $OBS_PROJECT $package_name
+        done
+    fi
+}
+
+#euler进行构建包
+build_euler() {
+    log_info "在EulerMaker平台进行构建..."
+    local package_name
+    if [ $# -gt 0 ]; then
+        for arg in "$@"; do
+            package_name="${PACKAGE_BASE_NAME}-${arg}"
+            ccb build-single os_project="$EULER_PROJECT" packages="$package_name"
+        done
+    else
+        for branch in "${BRANCHES[@]}"; do
+            package_name="${PACKAGE_BASE_NAME}-${branch}"
+            ccb build-single os_project="$EULER_PROJECT" packages="$package_name"
+        done
+    fi
+}
+
+query_euler() {
+    local branch="$1"
+    local package_name="${PACKAGE_BASE_NAME}-${branch}"
+    echo "[$package_name]"
+    
+    # 查询包的最新构建记录，按架构分组
+    local builds_result=$(ccb select builds packages="$package_name" \
+        -s create_time:desc 2>/dev/null || echo '[]')
+    
+    if command -v jq >/dev/null 2>&1 && [[ "$builds_result" != "[]" ]]; then
+        # 按架构分组，显示每个架构的最新状态
+        echo "$builds_result" | jq -r '
+            if length > 0 then
+                [.[] | ._source] |
+                sort_by(.create_time) | reverse |
+                group_by(.build_target.architecture) |
+                map(.[0]) |
+                .[] |
+                .build_target.architecture + ": " + 
+                (if .status == 201 then "succeeded"
+                    elif .status == 202 then "failed"  
+                    elif .status == 200 then "building"
+                    elif .status == 203 then
+                    if .published_status == 2 then "succeeded" else "finished" end
+                    else (.status | tostring) end)
+            else
+                "无构建记录"
+            end
+        ' 2>/dev/null | sort
+    else
+        echo "无构建记录"
+    fi
+    echo ""
+}
 # 查询EulerMaker构建状态
 query_euler_status() {
     log_info "查询EulerMaker构建状态..."
-    
-    for branch in "${BRANCHES[@]}"; do
-        local package_name="${PACKAGE_BASE_NAME}-${branch}"
-        echo "[$package_name]"
-        
-        # 查询包的最新构建记录，按架构分组
-        local builds_result=$(ccb select builds packages="$package_name" \
-            -s create_time:desc 2>/dev/null || echo '[]')
-        
-        if command -v jq >/dev/null 2>&1 && [[ "$builds_result" != "[]" ]]; then
-            # 按架构分组，显示每个架构的最新状态
-            echo "$builds_result" | jq -r '
-                if length > 0 then
-                    [.[] | ._source] |
-                    sort_by(.create_time) | reverse |
-                    group_by(.build_target.architecture) |
-                    map(.[0]) |
-                    .[] |
-                    .build_target.architecture + ": " + 
-                    (if .status == 201 then "succeeded"
-                     elif .status == 202 then "failed"  
-                     elif .status == 200 then "building"
-                     elif .status == 203 then
-                       if .published_status == 2 then "succeeded" else "finished" end
-                     else (.status | tostring) end)
-                else
-                    "无构建记录"
-                end
-            ' 2>/dev/null | sort
-        else
-            echo "无构建记录"
-        fi
-        echo ""
-    done
+    local package_name
+    if [ $# -gt 0 ]; then
+        for arg in "$@"; do
+            # package_name="${PACKAGE_BASE_NAME}-${arg}"
+            query_euler $arg
+        done
+    else
+        for branch in "${BRANCHES[@]}"; do
+            # package_name="${PACKAGE_BASE_NAME}-${branch}"
+            query_euler $branch
+        done
+    fi
 }
 
 # 查询详细构建状态
@@ -506,24 +593,40 @@ main() {
             status_work_repo
             ;;
         "create-obs")
-            create_obs_packages "$2"
+            shift   # 去掉 $1（即"create-obs"）
+            create_obs_packages "$@"
             ;;
         "create-euler")
-            create_euler_packages
-            ;;
-        "query-obs")
-            query_obs_status
-            ;;
-        "query-euler")
-            query_euler_status
+            shift
+            create_euler_packages "$@"
             ;;
         "create-all")
             create_obs_packages
             create_euler_packages
             ;;
+        "query-obs")
+            shift
+            query_obs_status "$@"
+            ;;
+        "query-euler")
+            shift
+            query_euler_status "$@"
+            ;;
         "query-all")
             query_obs_status
             query_euler_status
+            ;;
+        "build-obs")
+            shift
+            build_obs "$@"
+            ;;
+        "build-euler")
+            shift
+            build_euler "$@"
+            ;;
+        "build-all")
+            build_obs
+            build_euler
             ;;
         "status-summary")
             log_info "构建状态汇总..."
