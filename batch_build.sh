@@ -271,6 +271,60 @@ query_euler_status() {
     fi
 }
 
+query_euler_look_good() {
+    log_info "聚合查询状态汇总..."
+
+    local targets=()
+
+    if [ $# -gt 0 ]; then
+        targets=("$@")   # 使用传入参数
+    else
+        targets=("${BRANCHES[@]}")   # 使用默认列表
+    fi       
+    # 表头
+    printf "%-20s %-15s %-15s %-15s %-15s\n" "包名" "架构" "系统版本" "状态" "时间"
+    echo "$(printf '%.80s' "$(printf '%*s' 80 | tr ' ' '-')")"
+    
+    for branch in "${targets[@]}"; do
+        local package_name="${PACKAGE_BASE_NAME}-${branch}"
+        
+        # 使用builds表查询
+        local query_result=$(ccb select builds packages="$package_name" os_project="$EULER_PROJECT" 2>/dev/null)
+        
+        if [[ -n "$query_result" ]]; then
+            echo "$query_result" | jq -r --arg pkg "$package_name" '
+                if length > 0 then
+                    .[] | 
+                    select(._source.os_project == "'"$EULER_PROJECT"'") |
+                    ._source as $build |
+                    [$pkg, $build.build_target.architecture, $build.build_target.os_variant, 
+                        (if $build.status == 201 then "成功" 
+                        elif $build.status == 202 then "失败"
+                        elif $build.status == 203 then "已完成"
+                        elif $build.status == 103 then "构建中"
+                        elif $build.status == 200 then "构建成功"
+                        else ($build.status | tostring) end),
+                        ($build.create_time // "未知")] | 
+                    @tsv
+                else
+                    [$pkg, "N/A", "N/A", "无数据", "N/A"] | @tsv
+                end
+            ' 2>/dev/null | sort -k5 -r | sort -k2,2 -k3,3 -u | while IFS=$'\t' read -r pkg arch os status time; do
+                # 根据状态着色
+                case "$status" in
+                    "成功") color="$GREEN" ;;
+                    "失败") color="$RED" ;;
+                    "构建中") color="$YELLOW" ;;
+                    *) color="$NC" ;;
+                esac
+                printf "%-20s %-15s ${color}%-15s${NC} %-15s\n" "$pkg" "$arch" "$status" "$time"
+            done
+        else
+            printf "%-20s %-15s %-15s %-15s %-15s\n" "$package_name" "N/A" "N/A" "无数据" "N/A"
+        fi
+    done
+}
+
 # 查询详细构建状态
 query_builds_detail() {
     log_info "详细查询构建状态..."
@@ -628,562 +682,550 @@ main() {
             build_obs
             build_euler
             ;;
-        "status-summary")
-            log_info "构建状态汇总..."
+        "query-quler-look-good")
+            shift
+            query_euler_look_good "$@"
+            ;;
+        #功能无效
+        # "status-summary")
+        #     log_info "构建状态汇总..."
             
-            echo "=========================================="
-            echo "               构建状态汇总"
-            echo "=========================================="
-            printf "%-20s %-10s %-15s %-15s\n" "包名" "架构" "总体状态" "包构建状态"
-            echo "------------------------------------------"
+        #     echo "=========================================="
+        #     echo "               构建状态汇总"
+        #     echo "=========================================="
+        #     printf "%-20s %-10s %-15s %-15s\n" "包名" "架构" "总体状态" "包构建状态"
+        #     echo "------------------------------------------"
             
-            for branch in "${BRANCHES[@]}"; do
-                local package_name="${PACKAGE_BASE_NAME}-${branch}"
+        #     for branch in "${BRANCHES[@]}"; do
+        #         local package_name="${PACKAGE_BASE_NAME}-${branch}"
                 
-                # 使用ccb select查询构建状态
-                local builds_result=$(ccb select builds packages="$package_name" os_project="$EULER_PROJECT" \
-                    -f build_target,status,build_packages \
-                    -s create_time:desc 2>/dev/null || echo '[]')
+        #         # 使用ccb select查询构建状态
+        #         local builds_result=$(ccb select builds packages="$package_name" os_project="$EULER_PROJECT" \
+        #             -f build_target,status,build_packages \
+        #             -s create_time:desc 2>/dev/null || echo '[]')
                 
-                if command -v jq >/dev/null 2>&1 && [[ "$builds_result" != "[]" ]]; then
-                    # 按架构分组，取每个架构的最新记录
-                    echo "$builds_result" | jq -r '
-                        group_by(._source.build_target.architecture) | 
-                        .[] | .[0] |
-                        ._source.build_target.architecture + " " +
-                        (if ._source.status == 201 then "构建中"
-                         elif ._source.status == 203 then "已完成"
-                         else (._source.status | tostring) end) + " " +
-                        (if ._source.build_packages then
-                            (._source.build_packages | to_entries[0].value.build.status |
-                            if . == 103 then "构建中"
-                            elif . == 200 then "成功"
-                            elif . >= 400 then "失败"
-                            else (. | tostring) end)
-                         else "无包构建信息" end)
-                    ' 2>/dev/null | while read arch overall_status pkg_status; do
-                        if [[ -n "$arch" ]]; then
-                            printf "%-20s %-10s %-15s %-15s\n" "$package_name" "$arch" "$overall_status" "$pkg_status"
-                        fi
-                    done
-                else
-                    printf "%-20s %-10s %-15s %-15s\n" "$package_name" "未知" "无记录" "无记录"
-                fi
-            done
+        #         if command -v jq >/dev/null 2>&1 && [[ "$builds_result" != "[]" ]]; then
+        #             # 按架构分组，取每个架构的最新记录
+        #             echo "$builds_result" | jq -r '
+        #                 group_by(._source.build_target.architecture) | 
+        #                 .[] | .[0] |
+        #                 ._source.build_target.architecture + " " +
+        #                 (if ._source.status == 201 then "构建中"
+        #                  elif ._source.status == 203 then "已完成"
+        #                  else (._source.status | tostring) end) + " " +
+        #                 (if ._source.build_packages then
+        #                     (._source.build_packages | to_entries[0].value.build.status |
+        #                     if . == 103 then "构建中"
+        #                     elif . == 200 then "成功"
+        #                     elif . >= 400 then "失败"
+        #                     else (. | tostring) end)
+        #                  else "无包构建信息" end)
+        #             ' 2>/dev/null | while read arch overall_status pkg_status; do
+        #                 if [[ -n "$arch" ]]; then
+        #                     printf "%-20s %-10s %-15s %-15s\n" "$package_name" "$arch" "$overall_status" "$pkg_status"
+        #                 fi
+        #             done
+        #         else
+        #             printf "%-20s %-10s %-15s %-15s\n" "$package_name" "未知" "无记录" "无记录"
+        #         fi
+        #     done
             
-            echo "=========================================="
-            ;;
-        "query-precise-status")
-            log_info "精确查询构建状态..."
+        #     echo "=========================================="
+        #     ;;
+        #功能无效
+        # "query-precise-status")
+        #     log_info "精确查询构建状态..."
             
-            for branch in "${BRANCHES[@]}"; do
-                local package_name="${PACKAGE_BASE_NAME}-${branch}"
-                echo "========================================"
-                echo "包名: $package_name"
-                echo "========================================"
+        #     for branch in "${BRANCHES[@]}"; do
+        #         local package_name="${PACKAGE_BASE_NAME}-${branch}"
+        #         echo "========================================"
+        #         echo "包名: $package_name"
+        #         echo "========================================"
                 
-                # 使用正确的ccb select语法查询构建状态
-                log_info "查询最新构建记录..."
-                local builds_result=$(ccb select builds packages="$package_name" os_project="$EULER_PROJECT" \
-                    -f build_id,status,create_time,build_target,build_packages \
-                    -s create_time:desc 2>/dev/null || echo '[]')
+        #         # 使用正确的ccb select语法查询构建状态
+        #         log_info "查询最新构建记录..."
+        #         local builds_result=$(ccb select builds packages="$package_name" os_project="$EULER_PROJECT" \
+        #             -f build_id,status,create_time,build_target,build_packages \
+        #             -s create_time:desc 2>/dev/null || echo '[]')
                 
-                if command -v jq >/dev/null 2>&1 && [[ "$builds_result" != "[]" ]]; then
-                    # 从ccb select的结果中提取_source字段
-                    echo "$builds_result" | jq -r '.[0:3][] | 
-                        "架构: " + ._source.build_target.architecture + 
-                        " | 总体状态: " + 
-                        (if ._source.status == 201 then "构建中" 
-                         elif ._source.status == 203 then "已完成" 
-                         else (._source.status | tostring) end) +
-                        " | 包构建状态: " +
-                        (if ._source.build_packages then
-                            (._source.build_packages | to_entries[0].value.build.status |
-                            if . == 103 then "构建中"
-                            elif . == 200 then "成功"
-                            elif . >= 400 then "失败"
-                            else (. | tostring) end)
-                         else "无包构建信息" end) +
-                        " | 创建时间: " + ._source.create_time +
-                        " | 构建ID: " + ._source.build_id' 2>/dev/null || echo "JSON解析失败"
-                else
-                    echo "未找到构建记录或需要安装jq"
-                fi
+        #         if command -v jq >/dev/null 2>&1 && [[ "$builds_result" != "[]" ]]; then
+        #             # 从ccb select的结果中提取_source字段
+        #             echo "$builds_result" | jq -r '.[0:3][] | 
+        #                 "架构: " + ._source.build_target.architecture + 
+        #                 " | 总体状态: " + 
+        #                 (if ._source.status == 201 then "构建中" 
+        #                  elif ._source.status == 203 then "已完成" 
+        #                  else (._source.status | tostring) end) +
+        #                 " | 包构建状态: " +
+        #                 (if ._source.build_packages then
+        #                     (._source.build_packages | to_entries[0].value.build.status |
+        #                     if . == 103 then "构建中"
+        #                     elif . == 200 then "成功"
+        #                     elif . >= 400 then "失败"
+        #                     else (. | tostring) end)
+        #                  else "无包构建信息" end) +
+        #                 " | 创建时间: " + ._source.create_time +
+        #                 " | 构建ID: " + ._source.build_id' 2>/dev/null || echo "JSON解析失败"
+        #         else
+        #             echo "未找到构建记录或需要安装jq"
+        #         fi
                 
-                echo ""
-            done
-            ;;
-        "query-status-friendly")
-            log_info "友好显示构建状态..."
+        #         echo ""
+        #     done
+        #     ;;
+        #功能无效
+        # "query-status-friendly")
+        #     log_info "友好显示构建状态..."
             
-            for branch in "${BRANCHES[@]}"; do
-                local package_name="${PACKAGE_BASE_NAME}-${branch}"
-                echo "========================================"
-                echo "包名: $package_name"
-                echo "========================================"
+        #     for branch in "${BRANCHES[@]}"; do
+        #         local package_name="${PACKAGE_BASE_NAME}-${branch}"
+        #         echo "========================================"
+        #         echo "包名: $package_name"
+        #         echo "========================================"
                 
-                # 查询最新构建状态
-                local builds_json=$(ccb select builds packages="$package_name" -s create_time:desc | head -20)
+        #         # 查询最新构建状态
+        #         local builds_json=$(ccb select builds packages="$package_name" -s create_time:desc | head -20)
                 
-                if [[ -n "$builds_json" && "$builds_json" != "[]" ]]; then
-                    echo "$builds_json" | jq -r '.[] | select(._source.create_time != null) | "架构: " + ._source.build_target.architecture + 
-                        " | 状态: " + (._source.status | tostring) + 
-                        " | 创建时间: " + ._source.create_time + 
-                        " | 构建ID: " + ._source.build_id' 2>/dev/null || echo "JSON解析失败"
-                else
-                    echo "未找到构建记录"
-                fi
+        #         if [[ -n "$builds_json" && "$builds_json" != "[]" ]]; then
+        #             echo "$builds_json" | jq -r '.[] | select(._source.create_time != null) | "架构: " + ._source.build_target.architecture + 
+        #                 " | 状态: " + (._source.status | tostring) + 
+        #                 " | 创建时间: " + ._source.create_time + 
+        #                 " | 构建ID: " + ._source.build_id' 2>/dev/null || echo "JSON解析失败"
+        #         else
+        #             echo "未找到构建记录"
+        #         fi
                 
-                echo ""
-            done
-            ;;
-        "query-builds-detail")
-            query_builds_detail
-            ;;
-        "debug-projects")
-            log_info "查询可用的项目..."
+        #         echo ""
+        #     done
+        #     ;;
+        # "query-builds-detail")
+        #     #太细节了
+        #     query_builds_detail
+        #     ;;
+        # "debug-projects")
+        #     log_info "查询可用的项目..."
             
-            # 查询所有项目
-            ccb select projects || echo "无法查询项目"
+        #     # 查询所有项目
+        #     ccb select projects || echo "无法查询项目"
             
-            # 查询包含当前用户的项目
-            ccb select projects | grep -i "swjnxyf\|yyjeqhc" || echo "未找到相关项目"
-            ;;
-        "test-obs-single")
-            log_info "测试创建单个OBS包..."
-            local test_branch="fix1"
-            local package_name="${PACKAGE_BASE_NAME}-${test_branch}"
+        #     # 查询包含当前用户的项目
+        #     ccb select projects | grep -i "swjnxyf\|yyjeqhc" || echo "未找到相关项目"
+        #     ;;
+#         "test-obs-single")
+#             log_info "测试创建单个OBS包..."
+#             local test_branch="fix1"
+#             local package_name="${PACKAGE_BASE_NAME}-${test_branch}"
             
-            # 创建包元数据
-            echo "<package name=\"$package_name\" project=\"$OBS_PROJECT\">
-  <title>$package_name</title>
-  <description>Test package for branch $test_branch</description>
-</package>" | osc meta pkg "$OBS_PROJECT" "$package_name" -F - || true
+#             # 创建包元数据
+#             echo "<package name=\"$package_name\" project=\"$OBS_PROJECT\">
+#   <title>$package_name</title>
+#   <description>Test package for branch $test_branch</description>
+# </package>" | osc meta pkg "$OBS_PROJECT" "$package_name" -F - || true
             
-            log_info "OBS包元数据创建完成: $package_name"
-            ;;
-        "test-euler-single")
-            log_info "测试创建单个EulerMaker包..."
-            local test_branch="fix1"
-            local package_name="${PACKAGE_BASE_NAME}-${test_branch}"
+#             log_info "OBS包元数据创建完成: $package_name"
+#             ;;
+#         "test-euler-single")
+#             log_info "测试创建单个EulerMaker包..."
+#             local test_branch="fix1"
+#             local package_name="${PACKAGE_BASE_NAME}-${test_branch}"
             
-            # 创建包的JSON配置
-            cat > "/tmp/test_euler_config_$$" << EOF
-{
-  "package_repos+": [
-    {
-      "spec_name": "$package_name",
-      "spec_url": "$REPO_URL",
-      "spec_branch": "$test_branch",
-      "spec_description": "Test package for branch $test_branch"
-    }
-  ]
-}
-EOF
+#             # 创建包的JSON配置
+#             cat > "/tmp/test_euler_config_$$" << EOF
+# {
+#   "package_repos+": [
+#     {
+#       "spec_name": "$package_name",
+#       "spec_url": "$REPO_URL",
+#       "spec_branch": "$test_branch",
+#       "spec_description": "Test package for branch $test_branch"
+#     }
+#   ]
+# }
+# EOF
             
-            # 向项目添加包
-            log_info "向项目添加包..."
-            ccb update projects "$EULER_PROJECT" --json "/tmp/test_euler_config_$$" || true
+#             # 向项目添加包
+#             log_info "向项目添加包..."
+#             ccb update projects "$EULER_PROJECT" --json "/tmp/test_euler_config_$$" || true
             
-            # 清理临时文件
-            rm -f "/tmp/test_euler_config_$$"
-            ;;
-        "test-build-single")
-            log_info "测试触发单个包构建..."
-            local test_branch="fix1"
-            local package_name="${PACKAGE_BASE_NAME}-${test_branch}"
+#             # 清理临时文件
+#             rm -f "/tmp/test_euler_config_$$"
+#             ;;
+#         "test-build-single")
+#             log_info "测试触发单个包构建..."
+#             local test_branch="fix1"
+#             local package_name="${PACKAGE_BASE_NAME}-${test_branch}"
             
-            # 触发EulerMaker构建
-            log_info "触发EulerMaker构建..."
-            ccb build-single os_project="$EULER_PROJECT" packages="$package_name" || true
-            ;;
-        "test-query-single")
-            log_info "测试查询单个包状态..."
-            local test_branch="fix1"
-            local package_name="${PACKAGE_BASE_NAME}-${test_branch}"
+#             # 触发EulerMaker构建
+#             log_info "触发EulerMaker构建..."
+#             ccb build-single os_project="$EULER_PROJECT" packages="$package_name" || true
+#             ;;
+#         "test-query-single")
+#             log_info "测试查询单个包状态..."
+#             local test_branch="fix1"
+#             local package_name="${PACKAGE_BASE_NAME}-${test_branch}"
             
-            # 查询OBS状态
-            log_info "查询OBS状态..."
-            osc results "$OBS_PROJECT" "$package_name" || true
+#             # 查询OBS状态
+#             log_info "查询OBS状态..."
+#             osc results "$OBS_PROJECT" "$package_name" || true
             
-            echo "---"
+#             echo "---"
             
-            # 查询EulerMaker状态
-            log_info "查询EulerMaker状态..."
-            ccb select builds os_project="$EULER_PROJECT" package_name="$package_name" || true
-            ;;
-        "status-codes")
-            cat << EOF
-EulerMaker构建状态码说明:
+#             # 查询EulerMaker状态
+#             log_info "查询EulerMaker状态..."
+#             ccb select builds os_project="$EULER_PROJECT" package_name="$package_name" || true
+#             ;;
+#         "status-codes")
+#             cat << EOF
+# EulerMaker构建状态码说明:
 
-构建状态 (status):
-  201 - 构建进行中
-  203 - 构建已完成
+# 构建状态 (status):
+#   201 - 构建进行中
+#   203 - 构建已完成
   
-包构建状态 (build_packages.*.build.status):
-  103 - 包构建进行中
-  200 - 包构建成功
-  400+ - 包构建失败
+# 包构建状态 (build_packages.*.build.status):
+#   103 - 包构建进行中
+#   200 - 包构建成功
+#   400+ - 包构建失败
   
-发布状态 (published_status):
-  0 - 未发布
-  1 - 发布中
-  2 - 已发布
-EOF
-            ;;
-        "cleanup")
-            log_info "清理测试数据..."
+# 发布状态 (published_status):
+#   0 - 未发布
+#   1 - 发布中
+#   2 - 已发布
+# EOF
+#             ;;
+        # "cleanup")
+        #     log_info "清理测试数据..."
             
-            # 清理临时文件
-            rm -f /tmp/obs_service_${PACKAGE_BASE_NAME}_*
-            rm -f /tmp/euler_config_${PACKAGE_BASE_NAME}_*
-            rm -f /tmp/test_euler_config_*
+        #     # 清理临时文件
+        #     rm -f /tmp/obs_service_${PACKAGE_BASE_NAME}_*
+        #     rm -f /tmp/euler_config_${PACKAGE_BASE_NAME}_*
+        #     rm -f /tmp/test_euler_config_*
             
-            # 清理OBS检出目录
-            rm -rf "${OBS_PROJECT}" || true
+        #     # 清理OBS检出目录
+        #     rm -rf "${OBS_PROJECT}" || true
             
-            log_info "清理完成"
-            ;;
-        "debug-euler")
-            log_info "调试EulerMaker配置..."
-            echo "项目: $EULER_PROJECT"
-            echo "仓库: $REPO_URL"
-            echo "分支: ${BRANCHES[*]}"
+        #     log_info "清理完成"
+        #     ;;
+        # "debug-euler")
+        #     log_info "调试EulerMaker配置..."
+        #     echo "项目: $EULER_PROJECT"
+        #     echo "仓库: $REPO_URL"
+        #     echo "分支: ${BRANCHES[*]}"
             
-            # 查询项目是否存在
-            log_info "查询项目信息..."
-            ccb select projects | grep "$EULER_PROJECT" || echo "项目不存在或无权限"
+        #     # 查询项目是否存在
+        #     log_info "查询项目信息..."
+        #     ccb select projects | grep "$EULER_PROJECT" || echo "项目不存在或无权限"
             
-            # 测试ccb工具
-            log_info "测试ccb工具..."
-            ccb --help || echo "ccb工具有问题"
-            ;;
-        "debug-query")
-            log_info "调试查询结果..."
+        #     # 测试ccb工具
+        #     log_info "测试ccb工具..."
+        #     ccb --help || echo "ccb工具有问题"
+        #     ;;
+        # "debug-query")
+        #     log_info "调试查询结果..."
             
-            local package_name="hello-world-fix3"
-            log_info "测试查询包: $package_name"
+        #     local package_name="hello-world-fix3"
+        #     log_info "测试查询包: $package_name"
             
-            # 测试基本查询
-            echo "=== 基本查询 ==="
-            ccb select builds packages="$package_name" || echo "基本查询失败"
+        #     # 测试基本查询
+        #     echo "=== 基本查询 ==="
+        #     ccb select builds packages="$package_name" || echo "基本查询失败"
             
-            echo "=== 带项目名查询 ==="
-            ccb select builds packages="$package_name" os_project="$EULER_PROJECT" || echo "带项目名查询失败"
+        #     echo "=== 带项目名查询 ==="
+        #     ccb select builds packages="$package_name" os_project="$EULER_PROJECT" || echo "带项目名查询失败"
             
-            echo "=== 带字段过滤查询 ==="
-            ccb select builds packages="$package_name" os_project="$EULER_PROJECT" \
-                -f build_target,status,build_packages || echo "字段过滤查询失败"
+        #     echo "=== 带字段过滤查询 ==="
+        #     ccb select builds packages="$package_name" os_project="$EULER_PROJECT" \
+        #         -f build_target,status,build_packages || echo "字段过滤查询失败"
             
-            echo "=== 带排序查询 ==="
-            ccb select builds packages="$package_name" os_project="$EULER_PROJECT" \
-                -f build_target,status,build_packages \
-                -s create_time:desc || echo "排序查询失败"
-            ;;
-        "query-aggregated")
-            log_info "使用聚合查询构建状态..."
+        #     echo "=== 带排序查询 ==="
+        #     ccb select builds packages="$package_name" os_project="$EULER_PROJECT" \
+        #         -f build_target,status,build_packages \
+        #         -s create_time:desc || echo "排序查询失败"
+        #     ;;
+        #不好用
+        # "query-aggregated")
+        #     log_info "使用聚合查询构建状态..."
             
-            for branch in "${BRANCHES[@]}"; do
-                local package_name="${PACKAGE_BASE_NAME}-${branch}"
-                log_info "=== 聚合查询包: $package_name ==="
+        #     for branch in "${BRANCHES[@]}"; do
+        #         local package_name="${PACKAGE_BASE_NAME}-${branch}"
+        #         log_info "=== 聚合查询包: $package_name ==="
                 
-                # 先尝试基本jobs查询
-                log_info "基本jobs查询..."
-                local basic_jobs=$(ccb select jobs packages="$package_name" 2>/dev/null)
-                if [[ -n "$basic_jobs" && "$basic_jobs" != "[]" ]]; then
-                    echo "基本jobs查询有结果，解析中..."
-                    echo "$basic_jobs" | jq -r '
-                        if type == "array" and length > 0 then
-                            .[] | 
-                            "Job ID: " + (._source.job_id // "未知") + 
-                            " | 状态: " + (._source.status | tostring) + 
-                            " | 架构: " + (._source.architecture // "未知") + 
-                            " | 开始时间: " + (._source.start_time // "未知")
-                        else
-                            "jobs查询结果为空或格式不符合预期"
-                        end
-                    ' 2>/dev/null || echo "jobs查询解析失败"
-                else
-                    log_info "基本jobs查询无结果，尝试builds查询..."
-                    local basic_builds=$(ccb select builds packages="$package_name" 2>/dev/null)
-                    if [[ -n "$basic_builds" && "$basic_builds" != "[]" ]]; then
-                        echo "builds查询有结果，解析中..."
-                        echo "$basic_builds" | jq -r '
-                            if type == "array" and length > 0 then
-                                .[] | 
-                                "Build ID: " + (._source.build_id // "未知") + 
-                                " | 状态: " + (._source.status | tostring) + 
-                                " | 架构: " + (._source.build_target.architecture // "未知") + 
-                                " | 创建时间: " + (._source.create_time // "未知")
-                            else
-                                "builds查询结果为空或格式不符合预期"
-                            end
-                        ' 2>/dev/null || echo "builds查询解析失败"
-                    else
-                        log_warn "包 $package_name 在jobs和builds表中都无记录"
-                    fi
-                fi
+        #         # 先尝试基本jobs查询
+        #         log_info "基本jobs查询..."
+        #         local basic_jobs=$(ccb select jobs packages="$package_name" 2>/dev/null)
+        #         if [[ -n "$basic_jobs" && "$basic_jobs" != "[]" ]]; then
+        #             echo "基本jobs查询有结果，解析中..."
+        #             echo "$basic_jobs" | jq -r '
+        #                 if type == "array" and length > 0 then
+        #                     .[] | 
+        #                     "Job ID: " + (._source.job_id // "未知") + 
+        #                     " | 状态: " + (._source.status | tostring) + 
+        #                     " | 架构: " + (._source.architecture // "未知") + 
+        #                     " | 开始时间: " + (._source.start_time // "未知")
+        #                 else
+        #                     "jobs查询结果为空或格式不符合预期"
+        #                 end
+        #             ' 2>/dev/null || echo "jobs查询解析失败"
+        #         else
+        #             log_info "基本jobs查询无结果，尝试builds查询..."
+        #             local basic_builds=$(ccb select builds packages="$package_name" 2>/dev/null)
+        #             if [[ -n "$basic_builds" && "$basic_builds" != "[]" ]]; then
+        #                 echo "builds查询有结果，解析中..."
+        #                 echo "$basic_builds" | jq -r '
+        #                     if type == "array" and length > 0 then
+        #                         .[] | 
+        #                         "Build ID: " + (._source.build_id // "未知") + 
+        #                         " | 状态: " + (._source.status | tostring) + 
+        #                         " | 架构: " + (._source.build_target.architecture // "未知") + 
+        #                         " | 创建时间: " + (._source.create_time // "未知")
+        #                     else
+        #                         "builds查询结果为空或格式不符合预期"
+        #                     end
+        #                 ' 2>/dev/null || echo "builds查询解析失败"
+        #             else
+        #                 log_warn "包 $package_name 在jobs和builds表中都无记录"
+        #             fi
+        #         fi
                 
-                # 尝试聚合查询（如果基本查询有结果）
-                if [[ -n "$basic_jobs" && "$basic_jobs" != "[]" ]] || [[ -n "$basic_builds" && "$basic_builds" != "[]" ]]; then
-                    log_info "尝试聚合查询..."
-                    local query_result=$(ccb select jobs packages="$package_name" os_project="$EULER_PROJECT" \
-                        -a group_by_architecture/group_by_os_variant/latest_build_info 2>/dev/null)
+        #         # 尝试聚合查询（如果基本查询有结果）
+        #         if [[ -n "$basic_jobs" && "$basic_jobs" != "[]" ]] || [[ -n "$basic_builds" && "$basic_builds" != "[]" ]]; then
+        #             log_info "尝试聚合查询..."
+        #             local query_result=$(ccb select jobs packages="$package_name" os_project="$EULER_PROJECT" \
+        #                 -a group_by_architecture/group_by_os_variant/latest_build_info 2>/dev/null)
                     
-                    if [[ -n "$query_result" ]]; then
-                        echo "$query_result" | jq -r '
-                            if type == "object" and has("aggregations") then
-                                .aggregations.group_by_architecture.buckets[] | 
-                                "架构: " + .key + " (" + (.doc_count | tostring) + " 个构建)" |
-                                . as $arch_info |
-                                (.group_by_os_variant.buckets[] | 
-                                    "  系统版本: " + .key + " (" + (.doc_count | tostring) + " 个构建)" |
-                                    . as $os_info |
-                                    (.latest_build_info.hits.hits[]._source | 
-                                        "    状态: " + (.status | tostring) + " (" + 
-                                        (if .status == 201 then "成功" 
-                                         elif .status == 202 then "失败" 
-                                         elif .status == 103 then "构建中" 
-                                         else "未知" end) + ")" +
-                                        " 时间: " + (.create_time // "未知")
-                                    )
-                                )
-                            else
-                                "无聚合数据或数据格式不符合预期"
-                            end
-                        ' 2>/dev/null || echo "聚合查询解析失败"
-                    else
-                        log_info "聚合查询无结果"
-                    fi
-                fi
-                echo
-            done
-            ;;
-        "query-aggregated-summary")
-            log_info "聚合查询状态汇总..."
+        #             if [[ -n "$query_result" ]]; then
+        #                 echo "$query_result" | jq -r '
+        #                     if type == "object" and has("aggregations") then
+        #                         .aggregations.group_by_architecture.buckets[] | 
+        #                         "架构: " + .key + " (" + (.doc_count | tostring) + " 个构建)" |
+        #                         . as $arch_info |
+        #                         (.group_by_os_variant.buckets[] | 
+        #                             "  系统版本: " + .key + " (" + (.doc_count | tostring) + " 个构建)" |
+        #                             . as $os_info |
+        #                             (.latest_build_info.hits.hits[]._source | 
+        #                                 "    状态: " + (.status | tostring) + " (" + 
+        #                                 (if .status == 201 then "成功" 
+        #                                  elif .status == 202 then "失败" 
+        #                                  elif .status == 103 then "构建中" 
+        #                                  else "未知" end) + ")" +
+        #                                 " 时间: " + (.create_time // "未知")
+        #                             )
+        #                         )
+        #                     else
+        #                         "无聚合数据或数据格式不符合预期"
+        #                     end
+        #                 ' 2>/dev/null || echo "聚合查询解析失败"
+        #             else
+        #                 log_info "聚合查询无结果"
+        #             fi
+        #         fi
+        #         echo
+        #     done
+        #     ;;
+        #重复了，只是查Eulermaker的包
+        # "status-overview")
+        #     log_info "构建状态总览..."
             
-            # 表头
-            printf "%-20s %-15s %-15s %-15s %-15s\n" "包名" "架构" "系统版本" "状态" "时间"
-            echo "$(printf '%.80s' "$(printf '%*s' 80 | tr ' ' '-')")"
+        #     # 统计各状态的数量
+        #     local total_packages=0
+        #     local success_count=0
+        #     local failed_count=0
+        #     local building_count=0
+        #     local completed_count=0
             
-            for branch in "${BRANCHES[@]}"; do
-                local package_name="${PACKAGE_BASE_NAME}-${branch}"
+        #     echo "包名               总体状态     x86_64       aarch64      riscv64      "
+        #     echo "--------------------------------------------------------------------------------"
+            
+        #     for branch in "${BRANCHES[@]}"; do
+        #         local package_name="${PACKAGE_BASE_NAME}-${branch}"
+        #         local query_result=$(ccb select builds packages="$package_name" os_project="$EULER_PROJECT" 2>/dev/null)
                 
-                # 使用builds表查询
-                local query_result=$(ccb select builds packages="$package_name" os_project="$EULER_PROJECT" 2>/dev/null)
-                
-                if [[ -n "$query_result" ]]; then
-                    echo "$query_result" | jq -r --arg pkg "$package_name" '
-                        if length > 0 then
-                            .[] | 
-                            select(._source.os_project == "'"$EULER_PROJECT"'") |
-                            ._source as $build |
-                            [$pkg, $build.build_target.architecture, $build.build_target.os_variant, 
-                             (if $build.status == 201 then "成功" 
-                              elif $build.status == 202 then "失败"
-                              elif $build.status == 203 then "已完成"
-                              elif $build.status == 103 then "构建中"
-                              elif $build.status == 200 then "构建成功"
-                              else ($build.status | tostring) end),
-                             ($build.create_time // "未知")] | 
-                            @tsv
-                        else
-                            [$pkg, "N/A", "N/A", "无数据", "N/A"] | @tsv
-                        end
-                    ' 2>/dev/null | sort -k5 -r | sort -k2,2 -k3,3 -u | while IFS=$'\t' read -r pkg arch os status time; do
-                        # 根据状态着色
-                        case "$status" in
-                            "成功") color="$GREEN" ;;
-                            "失败") color="$RED" ;;
-                            "构建中") color="$YELLOW" ;;
-                            *) color="$NC" ;;
-                        esac
-                        printf "%-20s %-15s ${color}%-15s${NC} %-15s\n" "$pkg" "$arch" "$status" "$time"
-                    done
-                else
-                    printf "%-20s %-15s %-15s %-15s %-15s\n" "$package_name" "N/A" "N/A" "无数据" "N/A"
-                fi
-            done
-            ;;
-        "status-overview")
-            log_info "构建状态总览..."
-            
-            # 统计各状态的数量
-            local total_packages=0
-            local success_count=0
-            local failed_count=0
-            local building_count=0
-            local completed_count=0
-            
-            echo "包名               总体状态     x86_64       aarch64      riscv64      "
-            echo "--------------------------------------------------------------------------------"
-            
-            for branch in "${BRANCHES[@]}"; do
-                local package_name="${PACKAGE_BASE_NAME}-${branch}"
-                local query_result=$(ccb select builds packages="$package_name" os_project="$EULER_PROJECT" 2>/dev/null)
-                
-                if [[ -n "$query_result" ]]; then
-                    # 统计各架构的状态
-                    local arch_status=$(echo "$query_result" | jq -r '
-                        if length > 0 then
-                            [.[] | select(._source.os_project == "'"$EULER_PROJECT"'") | ._source] |
-                            sort_by(.create_time) | reverse |
-                            group_by(.build_target.architecture) |
-                            map({
-                                arch: .[0].build_target.architecture,
-                                status: .[0].status,
-                                status_text: (if .[0].status == 201 then "成功" 
-                                             elif .[0].status == 202 then "失败"
-                                             elif .[0].status == 203 then "完成"
-                                             elif .[0].status == 103 then "构建中"
-                                             elif .[0].status == 200 then "构建成功"
-                                             else (.[0].status | tostring) end)
-                            }) |
-                            {
-                                x86_64: (map(select(.arch == "x86_64")) | if length > 0 then .[0].status_text else "无" end),
-                                aarch64: (map(select(.arch == "aarch64")) | if length > 0 then .[0].status_text else "无" end),
-                                riscv64: (map(select(.arch == "riscv64")) | if length > 0 then .[0].status_text else "无" end)
-                            } |
-                            [.x86_64, .aarch64, .riscv64] | @tsv
-                        else
-                            ["无", "无", "无"] | @tsv
-                        end
-                    ' 2>/dev/null)
+        #         if [[ -n "$query_result" ]]; then
+        #             # 统计各架构的状态
+        #             local arch_status=$(echo "$query_result" | jq -r '
+        #                 if length > 0 then
+        #                     [.[] | select(._source.os_project == "'"$EULER_PROJECT"'") | ._source] |
+        #                     sort_by(.create_time) | reverse |
+        #                     group_by(.build_target.architecture) |
+        #                     map({
+        #                         arch: .[0].build_target.architecture,
+        #                         status: .[0].status,
+        #                         status_text: (if .[0].status == 201 then "成功" 
+        #                                      elif .[0].status == 202 then "失败"
+        #                                      elif .[0].status == 203 then "完成"
+        #                                      elif .[0].status == 103 then "构建中"
+        #                                      elif .[0].status == 200 then "构建成功"
+        #                                      else (.[0].status | tostring) end)
+        #                     }) |
+        #                     {
+        #                         x86_64: (map(select(.arch == "x86_64")) | if length > 0 then .[0].status_text else "无" end),
+        #                         aarch64: (map(select(.arch == "aarch64")) | if length > 0 then .[0].status_text else "无" end),
+        #                         riscv64: (map(select(.arch == "riscv64")) | if length > 0 then .[0].status_text else "无" end)
+        #                     } |
+        #                     [.x86_64, .aarch64, .riscv64] | @tsv
+        #                 else
+        #                     ["无", "无", "无"] | @tsv
+        #                 end
+        #             ' 2>/dev/null)
                     
-                    if [[ -n "$arch_status" ]]; then
-                        IFS=$'\t' read -r x86_status aarch64_status riscv64_status <<< "$arch_status"
+        #             if [[ -n "$arch_status" ]]; then
+        #                 IFS=$'\t' read -r x86_status aarch64_status riscv64_status <<< "$arch_status"
                         
-                        # 判断总体状态
-                        local overall_status="未知"
-                        if [[ "$x86_status" == "成功" && "$aarch64_status" == "成功" ]]; then
-                            overall_status="✅ 全部成功"
-                            success_count=$((success_count + 1))
-                        elif [[ "$x86_status" == "失败" || "$aarch64_status" == "失败" ]]; then
-                            overall_status="❌ 有失败"
-                            failed_count=$((failed_count + 1))
-                        elif [[ "$x86_status" == "构建中" || "$aarch64_status" == "构建中" ]]; then
-                            overall_status="🔄 构建中"
-                            building_count=$((building_count + 1))
-                        elif [[ "$x86_status" == "完成" || "$aarch64_status" == "完成" ]]; then
-                            overall_status="✅ 已完成"
-                            completed_count=$((completed_count + 1))
-                        fi
+        #                 # 判断总体状态
+        #                 local overall_status="未知"
+        #                 if [[ "$x86_status" == "成功" && "$aarch64_status" == "成功" ]]; then
+        #                     overall_status="✅ 全部成功"
+        #                     success_count=$((success_count + 1))
+        #                 elif [[ "$x86_status" == "失败" || "$aarch64_status" == "失败" ]]; then
+        #                     overall_status="❌ 有失败"
+        #                     failed_count=$((failed_count + 1))
+        #                 elif [[ "$x86_status" == "构建中" || "$aarch64_status" == "构建中" ]]; then
+        #                     overall_status="🔄 构建中"
+        #                     building_count=$((building_count + 1))
+        #                 elif [[ "$x86_status" == "完成" || "$aarch64_status" == "完成" ]]; then
+        #                     overall_status="✅ 已完成"
+        #                     completed_count=$((completed_count + 1))
+        #                 fi
                         
-                        printf "%-20s %-15s %-12s %-12s %-12s\n" "$package_name" "$overall_status" "$x86_status" "$aarch64_status" "$riscv64_status"
-                    else
-                        printf "%-20s %-15s %-12s %-12s %-12s\n" "$package_name" "无数据" "无" "无" "无"
-                    fi
-                else
-                    printf "%-20s %-15s %-12s %-12s %-12s\n" "$package_name" "无数据" "无" "无" "无"
-                fi
-                total_packages=$((total_packages + 1))
-            done
+        #                 printf "%-20s %-15s %-12s %-12s %-12s\n" "$package_name" "$overall_status" "$x86_status" "$aarch64_status" "$riscv64_status"
+        #             else
+        #                 printf "%-20s %-15s %-12s %-12s %-12s\n" "$package_name" "无数据" "无" "无" "无"
+        #             fi
+        #         else
+        #             printf "%-20s %-15s %-12s %-12s %-12s\n" "$package_name" "无数据" "无" "无" "无"
+        #         fi
+        #         total_packages=$((total_packages + 1))
+        #     done
             
-            echo "--------------------------------------------------------------------------------"
-            echo "总计: $total_packages 个包 | 成功: $success_count | 失败: $failed_count | 构建中: $building_count | 已完成: $completed_count"
-            ;;
-        "results")
-            log_info "类似osc results的构建状态查询..."
+        #     echo "--------------------------------------------------------------------------------"
+        #     echo "总计: $total_packages 个包 | 成功: $success_count | 失败: $failed_count | 构建中: $building_count | 已完成: $completed_count"
+        #     ;;
+        #还是重复了，不如look-good
+        # "results")
+        #     log_info "类似osc results的构建状态查询..."
             
-            # 简洁的构建状态表格，类似osc results
-            printf "%-20s %-12s %-15s\n" "包名" "架构" "状态"
-            echo "---------------------------------------------------"
+        #     # 简洁的构建状态表格，类似osc results
+        #     printf "%-20s %-12s %-15s\n" "包名" "架构" "状态"
+        #     echo "---------------------------------------------------"
             
-            for branch in "${BRANCHES[@]}"; do
-                local package_name="${PACKAGE_BASE_NAME}-${branch}"
+        #     for branch in "${BRANCHES[@]}"; do
+        #         local package_name="${PACKAGE_BASE_NAME}-${branch}"
                 
-                # 查询最新构建状态
-                local builds_result=$(ccb select builds packages="$package_name" \
-                    -s create_time:desc 2>/dev/null || echo '[]')
+        #         # 查询最新构建状态
+        #         local builds_result=$(ccb select builds packages="$package_name" \
+        #             -s create_time:desc 2>/dev/null || echo '[]')
                 
-                if command -v jq >/dev/null 2>&1 && [[ "$builds_result" != "[]" ]]; then
-                    # 按架构分组，每个架构只显示最新状态
-                    echo "$builds_result" | jq -r --arg pkg "$package_name" '
-                        if length > 0 then
-                            [.[] | ._source] |
-                            sort_by(.create_time) | reverse |
-                            group_by(.build_target.architecture) |
-                            map(.[0]) |
-                            .[] |
-                            [$pkg, .build_target.architecture, 
-                             (if .status == 201 then "已成功"
-                              elif .status == 202 then "已失败"
-                              elif .status == 200 then "构建中"
-                              elif .status == 203 then
-                                # 构建已完成（旧版本），检查发布状态
-                                if .published_status == 2 then "已成功" else "已完成" end
-                              else (.status | tostring) end)] | 
-                            @tsv
-                        else
-                            [$pkg, "N/A", "无记录"] | @tsv
-                        end
-                    ' 2>/dev/null | while IFS=$'\t' read -r pkg arch status; do
-                        # 根据状态着色
-                        case "$status" in
-                            "已成功"|"成功"|"已完成") color="$GREEN" ;;
-                            "已失败"|"失败") color="$RED" ;;
-                            "构建中") color="$YELLOW" ;;
-                            *) color="$NC" ;;
-                        esac
-                        printf "%-20s %-12s ${color}%-15s${NC}\n" "$pkg" "$arch" "$status"
-                    done
-                else
-                    printf "%-20s %-12s %-15s\n" "$package_name" "N/A" "无记录"
-                fi
-            done
-            ;;
-        "results-detailed")
-            log_info "详细构建状态查询（类似osc results -v）..."
+        #         if command -v jq >/dev/null 2>&1 && [[ "$builds_result" != "[]" ]]; then
+        #             # 按架构分组，每个架构只显示最新状态
+        #             echo "$builds_result" | jq -r --arg pkg "$package_name" '
+        #                 if length > 0 then
+        #                     [.[] | ._source] |
+        #                     sort_by(.create_time) | reverse |
+        #                     group_by(.build_target.architecture) |
+        #                     map(.[0]) |
+        #                     .[] |
+        #                     [$pkg, .build_target.architecture, 
+        #                      (if .status == 201 then "已成功"
+        #                       elif .status == 202 then "已失败"
+        #                       elif .status == 200 then "构建中"
+        #                       elif .status == 203 then
+        #                         # 构建已完成（旧版本），检查发布状态
+        #                         if .published_status == 2 then "已成功" else "已完成" end
+        #                       else (.status | tostring) end)] | 
+        #                     @tsv
+        #                 else
+        #                     [$pkg, "N/A", "无记录"] | @tsv
+        #                 end
+        #             ' 2>/dev/null | while IFS=$'\t' read -r pkg arch status; do
+        #                 # 根据状态着色
+        #                 case "$status" in
+        #                     "已成功"|"成功"|"已完成") color="$GREEN" ;;
+        #                     "已失败"|"失败") color="$RED" ;;
+        #                     "构建中") color="$YELLOW" ;;
+        #                     *) color="$NC" ;;
+        #                 esac
+        #                 printf "%-20s %-12s ${color}%-15s${NC}\n" "$pkg" "$arch" "$status"
+        #             done
+        #         else
+        #             printf "%-20s %-12s %-15s\n" "$package_name" "N/A" "无记录"
+        #         fi
+        #     done
+        #     ;;
+        #还是重复的
+        # "results-detailed")
+        #     log_info "详细构建状态查询（类似osc results -v）..."
             
-            printf "%-20s %-12s %-15s %-15s %-20s\n" "包名" "架构" "状态" "构建ID" "创建时间"
-            echo "--------------------------------------------------------------------------------"
+        #     printf "%-20s %-12s %-15s %-15s %-20s\n" "包名" "架构" "状态" "构建ID" "创建时间"
+        #     echo "--------------------------------------------------------------------------------"
             
-            for branch in "${BRANCHES[@]}"; do
-                local package_name="${PACKAGE_BASE_NAME}-${branch}"
+        #     for branch in "${BRANCHES[@]}"; do
+        #         local package_name="${PACKAGE_BASE_NAME}-${branch}"
                 
-                # 查询详细构建状态
-                local builds_result=$(ccb select builds packages="$package_name" os_project="$EULER_PROJECT" \
-                    -f build_id,status,create_time,build_target,build_packages \
-                    -s create_time:desc 2>/dev/null || echo '[]')
+        #         # 查询详细构建状态
+        #         local builds_result=$(ccb select builds packages="$package_name" os_project="$EULER_PROJECT" \
+        #             -f build_id,status,create_time,build_target,build_packages \
+        #             -s create_time:desc 2>/dev/null || echo '[]')
                 
-                if command -v jq >/dev/null 2>&1 && [[ "$builds_result" != "[]" ]]; then
-                    # 显示详细信息
-                    echo "$builds_result" | jq -r --arg pkg "$package_name" '
-                        if length > 0 then
-                            [.[] | ._source] |
-                            sort_by(.create_time) | reverse |
-                            group_by(.build_target.architecture) |
-                            map(.[0]) |
-                            .[] |
-                            [$pkg, .build_target.architecture, 
-                             (if .status == 201 then "已成功"
-                              elif .status == 202 then "已失败"
-                              elif .status == 200 then "构建中"
-                              elif .status == 203 then
-                                # 构建已完成（旧版本），检查发布状态
-                                if .published_status == 2 then "已成功" else "已完成" end
-                              else (.status | tostring) end),
-                             .build_id[0:12],
-                             (.create_time // "未知")] | 
-                            @tsv
-                        else
-                            [$pkg, "N/A", "无记录", "N/A", "N/A"] | @tsv
-                        end
-                    ' 2>/dev/null | while IFS=$'\t' read -r pkg arch status build_id create_time; do
-                        # 根据状态着色
-                        case "$status" in
-                            "已成功"|"成功"|"已完成") color="$GREEN" ;;
-                            "已失败"|"失败") color="$RED" ;;
-                            "构建中") color="$YELLOW" ;;
-                            *) color="$NC" ;;
-                        esac
-                        printf "%-20s %-12s ${color}%-15s${NC} %-15s %-20s\n" "$pkg" "$arch" "$status" "$build_id" "$create_time"
-                    done
-                else
-                    printf "%-20s %-12s %-15s %-15s %-20s\n" "$package_name" "N/A" "无记录" "N/A" "N/A"
-                fi
-            done
-            ;;
+        #         if command -v jq >/dev/null 2>&1 && [[ "$builds_result" != "[]" ]]; then
+        #             # 显示详细信息
+        #             echo "$builds_result" | jq -r --arg pkg "$package_name" '
+        #                 if length > 0 then
+        #                     [.[] | ._source] |
+        #                     sort_by(.create_time) | reverse |
+        #                     group_by(.build_target.architecture) |
+        #                     map(.[0]) |
+        #                     .[] |
+        #                     [$pkg, .build_target.architecture, 
+        #                      (if .status == 201 then "已成功"
+        #                       elif .status == 202 then "已失败"
+        #                       elif .status == 200 then "构建中"
+        #                       elif .status == 203 then
+        #                         # 构建已完成（旧版本），检查发布状态
+        #                         if .published_status == 2 then "已成功" else "已完成" end
+        #                       else (.status | tostring) end),
+        #                      .build_id[0:12],
+        #                      (.create_time // "未知")] | 
+        #                     @tsv
+        #                 else
+        #                     [$pkg, "N/A", "无记录", "N/A", "N/A"] | @tsv
+        #                 end
+        #             ' 2>/dev/null | while IFS=$'\t' read -r pkg arch status build_id create_time; do
+        #                 # 根据状态着色
+        #                 case "$status" in
+        #                     "已成功"|"成功"|"已完成") color="$GREEN" ;;
+        #                     "已失败"|"失败") color="$RED" ;;
+        #                     "构建中") color="$YELLOW" ;;
+        #                     *) color="$NC" ;;
+        #                 esac
+        #                 printf "%-20s %-12s ${color}%-15s${NC} %-15s %-20s\n" "$pkg" "$arch" "$status" "$build_id" "$create_time"
+        #             done
+        #         else
+        #             printf "%-20s %-12s %-15s %-15s %-20s\n" "$package_name" "N/A" "无记录" "N/A" "N/A"
+        #         fi
+        #     done
+        #     ;;
+#     query-builds-detail  详细查询构建状态
+#   query-status-friendly  友好显示构建状态
+#   query-precise-status   精确查询构建状态(推荐)
+#   query-aggregated       聚合查询构建状态(最新)
+#   query-aggregated-summary  聚合查询状态汇总表(推荐)
+#   status-summary         构建状态汇总表
+#   status-overview        构建状态总览
+  
+# 测试命令:
+#   test-obs-single     测试创建单个OBS包
+#   test-euler-single   测试创建单个EulerMaker包
+#   test-build-single   测试触发单个包构建
+#   test-query-single   测试查询单个包状态
+#   cleanup             清理测试数据
+
+  
+# 调试命令:
+#   debug-projects  调试项目查询
+#   debug-euler     调试EulerMaker配置
+#   debug-query     调试查询结果
+#   status-codes    显示状态码说明
+# results         简洁构建状态查询（类似osc results）
         "help"|*)
             cat << EOF
 批量构建脚本使用说明:
@@ -1200,34 +1242,16 @@ EOF
   push <branch>   推送分支到远程仓库
 
 构建管理命令:
-  create-obs      创建所有OBS包
-  create-euler    创建所有EulerMaker包
-  create-all      创建所有平台的包
+  create-obs      创建所有OBS包，并构建
+  create-euler    创建所有EulerMaker包，并构建
+  create-all      创建所有平台的包，并构建
   query-obs       查询OBS构建状态
   query-euler     查询EulerMaker构建状态
   query-all       查询所有平台构建状态
-  results         简洁构建状态查询（类似osc results）
-  results-detailed 详细构建状态查询（类似osc results -v）
-  query-builds-detail  详细查询构建状态
-  query-status-friendly  友好显示构建状态
-  query-precise-status   精确查询构建状态(推荐)
-  query-aggregated       聚合查询构建状态(最新)
-  query-aggregated-summary  聚合查询状态汇总表(推荐)
-  status-summary         构建状态汇总表
-  status-overview        构建状态总览
-  
-测试命令:
-  test-obs-single     测试创建单个OBS包
-  test-euler-single   测试创建单个EulerMaker包
-  test-build-single   测试触发单个包构建
-  test-query-single   测试查询单个包状态
-  cleanup             清理测试数据
-  
-调试命令:
-  debug-projects  调试项目查询
-  debug-euler     调试EulerMaker配置
-  debug-query     调试查询结果
-  status-codes    显示状态码说明
+  build-obs       构建OBS包
+  build-euler     构建EulerMaker包
+  build-all       构建所有平台的包
+  query-quler-look-good 友好展示构建结果
 
 示例:
   $0 create-all   # 创建所有包
