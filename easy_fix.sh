@@ -6,29 +6,44 @@
 set -e
 
 # 默认配置文件路径
-CONFIG_FILE=".batch_build_config"
+CONFIG_FILE=".easy_fix.yml"
 WORKDIR=$(pwd)
 
-# 默认配置（可被配置文件覆盖）
-REPO_URL="https://gitee.com/yyjeqhc/hello-world.git"
-REPO_BRANCH="master"
-REPO_URL_SSH="git@gitee.com:yyjeqhc/hello-world.git"
-BRANCHES=("fix1" "fix2" "fix3")
-PACKAGE_BASE_NAME="hello-world"
-OBS_PROJECT="home:yyjeqhc:branches:openEuler:24.03:SP2:Everything"
-EULER_PROJECT="swjnxyf:openEuler-24.03-LTS-SP1:everything"
-BASE_REPO_DIR="base_repo"
-WORK_REPO_DIR="work_repo"
-GIT_DIR=".git"
-GITS_DIR=".gits"
-GIT_EXCLUDE_FILE="$GIT_DIR/info/exclude"
-GITS_EXCLUDE_FILE="$GITS_DIR/info/exclude"
-
-# 加载配置文件
+# 从YAML配置文件读取配置
 load_config() {
-    if [[ -f "$CONFIG_FILE" ]]; then
-        log_info "加载配置文件: $CONFIG_FILE"
-        source "$CONFIG_FILE"
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        log_error "配置文件不存在: $CONFIG_FILE"
+        log_error "请先运行 'ef gen' 命令生成配置文件"
+        return 1
+    fi
+    
+    log_info "加载配置文件: $CONFIG_FILE"
+    
+    # 读取YAML配置（使用简单的grep和awk解析）
+    REPO_URL=$(grep "^  url:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '"')
+    REPO_BRANCH=$(grep "^  branch:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '"')
+    
+    # 从仓库URL推导包名和目录名
+    PACKAGE_BASE_NAME=$(basename "$REPO_URL" .git)
+    BASE_REPO_DIR="${PACKAGE_BASE_NAME}"
+    
+    # 读取分支列表（简单解析YAML数组）
+    BRANCHES=($(sed -n '/^branches:/,/^[^ ]/p' "$CONFIG_FILE" | grep "^  - " | awk '{print $2}' | tr -d '"'))
+    
+    # 读取构建项目配置
+    OBS_PROJECT=$(grep "^    project:" "$CONFIG_FILE" | head -1 | awk '{print $2}' | tr -d '"')
+    EULER_PROJECT=$(grep "^    project:" "$CONFIG_FILE" | tail -1 | awk '{print $2}' | tr -d '"')
+    
+    # 固定的目录配置
+    GIT_DIR=".git"
+    GITS_DIR=".gits"
+    GIT_EXCLUDE_FILE="$GIT_DIR/info/exclude"
+    GITS_EXCLUDE_FILE="$GITS_DIR/info/exclude"
+    
+    # 验证必需的配置
+    if [[ -z "$REPO_URL" || "$REPO_URL" == *"your-"* ]]; then
+        log_error "配置文件中的仓库地址无效，请编辑 $CONFIG_FILE"
+        return 1
     fi
 }
 
@@ -79,7 +94,7 @@ create_obs_package() {
 <services>
         <service name="tar_scm">
                 <param name="scm">git</param>
-                <param name="url">${REPO_URL_SSH}</param>
+                <param name="url">${REPO_URL}</param>
                 <param name="revision">${branch}</param>
                 <param name="exclude">*</param>
                 <param name="extract">*</param>
@@ -364,46 +379,129 @@ query_builds_detail() {
 
 # 生成项目结构
 gen_project() {
-    log_info "生成批量构建项目结构..."
+    log_info "在当前目录生成配置文件..."
     
-    # 创建项目目录
-    mkdir -p "$WORKDIR"
-    cd "$WORKDIR"
-    
-    # 创建配置文件模板
-    cat > "$CONFIG_FILE" << EOF
-# 批量构建配置文件
-# 仓库配置
-REPO_URL="https://gitee.com/your-username/your-repo.git"
-REPO_URL_SSH="git@gitee.com:your-username/your-repo.git"
-PACKAGE_BASE_NAME="your-package"
-BRANCHES=("main" "dev" "feature")
+    # 创建YAML配置文件
+    cat > "$CONFIG_FILE" << 'EOF'
+# Easy Fix 批量构建配置文件
+# 只需填写一个git URL即可，系统会自动推导包名和基础目录
 
-# OBS配置
-OBS_PROJECT="home:your-username:branches:openEuler:24.03:SP2:Everything"
+repository:
+  url: "https://gitee.com/your-username/your-repo.git"
+  branch: "master"
 
-# EulerMaker配置  
-EULER_PROJECT="your-username:openEuler-24.03-LTS-SP1:everything"
+# 分支列表（初始为空，使用 ef swicth 命令会自动添加）
+branches: []
 
-# 仓库目录配置
-BASE_REPO_DIR="base_repo"
-WORK_REPO_DIR="work_repo"
+build:
+  obs:
+    project: "home:your-username:branches:openEuler:24.03:SP2:Everything"
+  euler:
+    project: "your-username:openEuler-24.03-LTS-SP1:everything"
+
 EOF
 
-    # 创建目录结构
+    # 创建必要的目录
     mkdir -p logs
     mkdir -p tmp
     
-    log_info "项目结构生成完成!"
-    log_info "请编辑 $CONFIG_FILE 配置文件，然后运行 'init' 初始化项目"
+    log_info "配置文件已生成: $CONFIG_FILE"
+    log_info "请编辑配置文件，只需设置正确的 git URL 即可"
+    log_info "然后运行 'ef init' 初始化项目"
+}
+
+# 安装脚本到系统
+install_script() {
+    local script_path="$0"
+    local install_dir="/usr/local/bin"
+    local script_name="ef"
+    
+    log_info "安装脚本到系统..."
+    
+    # 检查权限
+    if [[ ! -w "$install_dir" ]]; then
+        log_error "需要管理员权限安装到 $install_dir"
+        log_error "请运行: sudo $0 install"
+        return 1
+    fi
+    
+    # 复制脚本并创建软链接
+    cp "$script_path" "$install_dir/easy_fix"
+    chmod +x "$install_dir/easy_fix"
+    
+    # 创建短命令软链接
+    ln -sf "$install_dir/easy_fix" "$install_dir/$script_name"
+    
+    log_info "脚本已安装到: $install_dir/easy_fix"
+    log_info "短命令链接: $install_dir/$script_name"
+    
+    # 自动安装补全功能
+    install_completion
+    
+    log_info "现在可以使用 'ef' 或 'easy_fix' 命令"
+    log_info "支持Tab键自动补全命令和参数"
+}
+
+# 添加分支到配置文件
+add_branch() {
+    local branch="$1"
+    
+    if [[ -z "$branch" ]]; then
+        log_error "请指定分支名称"
+        return 1
+    fi
+    
+    # 检查分支是否已存在
+    if grep -q "^  - \"*$branch\"*$" "$CONFIG_FILE"; then
+        log_warn "分支 $branch 已存在于配置文件中"
+        return 0
+    fi
+    
+    # 添加分支到YAML文件
+    if grep -q "^branches: \[\]$" "$CONFIG_FILE"; then
+        # 如果branches是空数组，替换为包含新分支的数组
+        sed -i "s/^branches: \[\]$/branches:\n  - \"$branch\"/" "$CONFIG_FILE"
+    else
+        # 在branches部分添加新分支
+        sed -i "/^branches:/a\\  - \"$branch\"" "$CONFIG_FILE"
+    fi
+    
+    log_info "分支 $branch 已添加到配置文件"
+}
+
+# 移除分支从配置文件
+remove_branch() {
+    local branch="$1"
+    
+    if [[ -z "$branch" ]]; then
+        log_error "请指定分支名称"
+        return 1
+    fi
+    
+    # 移除分支
+    sed -i "/^  - \"*$branch\"*$/d" "$CONFIG_FILE"
+    
+    # 如果没有分支了，恢复为空数组
+    if ! grep -q "^  - " "$CONFIG_FILE"; then
+        sed -i "s/^branches:$/branches: []/" "$CONFIG_FILE"
+    fi
+    
+    log_info "分支 $branch 已从配置文件中移除"
+}
+
+# 列出配置的分支
+list_branches() {
+    log_info "配置的分支列表:"
+    if grep -q "^branches: \[\]$" "$CONFIG_FILE"; then
+        echo "  无分支配置"
+    else
+        grep "^  - " "$CONFIG_FILE" | sed 's/^  - "*/  /' | sed 's/"*$//'
+    fi
 }
 
 # 初始化项目
 init_project() {
     log_info "初始化批量构建项目..."
-    
-    # 加载配置
-    load_config
     
     # 验证配置
     if [[ -z "$REPO_URL" || "$REPO_URL" == *"your-"* ]]; then
@@ -414,19 +512,16 @@ init_project() {
     log_info "配置验证通过:"
     echo "  仓库: $REPO_URL"
     echo "  包名: $PACKAGE_BASE_NAME"
-    echo "  分支: ${BRANCHES[*]}"
+    echo "  基础目录: $BASE_REPO_DIR"
+    echo "  分支: ${BRANCHES[*]:-无}"
     echo "  OBS项目: $OBS_PROJECT"
     echo "  EulerMaker项目: $EULER_PROJECT"
     
     # 克隆基准仓库
     clone_base_repo
     
-    # 设置工作仓库
-    # setup_work_repo
-    
-    log_info "项目初始化完成,请手动解压压缩包并打上补丁"
-    log_info "简而言之，准备好.gits仓库的基准分支的内容"
-    log_info "准备好后，请运行 start子命令"
+    log_info "项目初始化完成"
+    log_info "请手动解压源码包并打上补丁，然后运行 'easy_fix start'"
 }
 
 create_sub_repo() {
@@ -566,6 +661,22 @@ switch_branch() {
     fi
     
     log_info "切换到分支: $branch"
+    
+    # 检查分支是否在配置文件中，如果不在则自动添加
+    local branch_exists=false
+    for configured_branch in "${BRANCHES[@]}"; do
+        if [[ "$configured_branch" == "$branch" ]]; then
+            branch_exists=true
+            break
+        fi
+    done
+    
+    if [[ "$branch_exists" == false ]]; then
+        log_info "分支 $branch 不在配置中，自动添加到配置文件"
+        add_branch "$branch"
+        # 重新加载配置以更新BRANCHES数组
+        load_config
+    fi
     
     # 检查主仓库是否干净
     cd "$BASE_REPO_DIR"
@@ -779,107 +890,242 @@ push_changes() {
 #     fi
 # }
 
+# 生成bash自动补全脚本
+generate_completion() {
+    cat << 'EOF'
+# Bash completion for Easy Fix (ef) script
+_ef_completion() {
+    local cur prev opts
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    # 主命令列表
+    opts="install install-completion gen init add-branch remove-branch list-branches start switch patch commit push status create-obs create-euler create-all query-obs query-euler query-all build-obs build-euler build-all query-euler-look-good help"
+
+    # 根据前一个命令提供特定补全
+    case "${prev}" in
+        switch|remove-branch)
+            # 从配置文件读取分支列表进行补全
+            if [[ -f ".easy_fix.yml" ]]; then
+                local branches=$(grep "^  - " .easy_fix.yml 2>/dev/null | sed 's/^  - "*//' | sed 's/"*$//' | tr '\n' ' ')
+                COMPREPLY=( $(compgen -W "${branches}" -- ${cur}) )
+            fi
+            return 0
+            ;;
+        patch)
+            # 补丁文件补全
+            COMPREPLY=( $(compgen -f -X '!*.patch' -- ${cur}) )
+            return 0
+            ;;
+        add-branch)
+            # 不提供补全，用户需要输入新分支名
+            return 0
+            ;;
+        commit)
+            # 提供一些常用的提交信息
+            local commit_msgs="'for build' 'fix bug' 'update patch' 'add feature'"
+            COMPREPLY=( $(compgen -W "${commit_msgs}" -- ${cur}) )
+            return 0
+            ;;
+    esac
+
+    # 默认补全主命令
+    COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )
+    return 0
+}
+
+# 注册补全函数
+complete -F _ef_completion ef
+complete -F _ef_completion easy_fix
+EOF
+}
+
+# 安装自动补全
+install_completion() {
+    local completion_dir="/etc/bash_completion.d"
+    local completion_file="$completion_dir/ef"
+    
+    log_info "安装bash自动补全..."
+    
+    # 检查权限
+    if [[ ! -w "$completion_dir" ]] && [[ ! -w "/usr/share/bash-completion/completions" ]]; then
+        log_error "需要管理员权限安装自动补全"
+        log_error "请运行: sudo $0 install-completion"
+        return 1
+    fi
+    
+    # 优先使用新的补全目录
+    if [[ -d "/usr/share/bash-completion/completions" ]] && [[ -w "/usr/share/bash-completion/completions" ]]; then
+        completion_dir="/usr/share/bash-completion/completions"
+        completion_file="$completion_dir/ef"
+    fi
+    
+    # 生成并安装补全脚本
+    generate_completion > "$completion_file"
+    
+    log_info "自动补全已安装到: $completion_file"
+    log_info "请重新加载shell或运行: source $completion_file"
+}
+
 # 主函数
 main() {
-    # 加载配置文件
-    load_config
-    
     case "${1:-help}" in
+        "install")
+            install_script
+            ;;
+        "install-completion")
+            install_completion
+            ;;
         "gen")
             gen_project
             ;;
         "init")
+            load_config
             init_project
             ;;
+        "add-branch")
+            add_branch "$2"
+            ;;
+        "remove-branch")
+            remove_branch "$2"
+            ;;
+        "list-branches")
+            list_branches
+            ;;
         "start")
+            load_config
             create_sub_repo
             ;;
         "switch")
+            load_config
             switch_branch "$2"
             ;;
         "patch")
+            load_config
             patch_repo "$2"
             ;;
         "commit")
+            load_config
             commit_changes "$2"
             ;;
         "push")
+            load_config
             push_changes
             ;;
         "status")
+            load_config
             status_repo
             ;;
         "create-obs")
-            shift   # 去掉 $1（即"create-obs"）
+            load_config
+            shift
             create_obs_packages "$@"
             ;;
         "create-euler")
+            load_config
             shift
             create_euler_packages "$@"
             ;;
         "create-all")
+            load_config
             create_obs_packages
             create_euler_packages
             ;;
         "query-obs")
+            load_config
             shift
             query_obs_status "$@"
             ;;
         "query-euler")
+            load_config
             shift
             query_euler_status "$@"
             ;;
         "query-all")
+            load_config
             query_obs_status
             query_euler_status
             ;;
         "build-obs")
+            load_config
             shift
             build_obs "$@"
             ;;
         "build-euler")
+            load_config
             shift
             build_euler "$@"
             ;;
         "build-all")
+            load_config
             build_obs
             build_euler
             ;;
         "query-euler-look-good")
+            load_config
             shift
             query_euler_look_good "$@"
             ;;
         "help"|*)
             cat << EOF
-批量构建脚本使用说明:
+Easy Fix (ef) - 批量构建脚本使用说明:
+
+安装命令:
+  install         安装脚本到系统路径，支持 ef 简写命令（自动安装补全）
+  install-completion 单独安装bash自动补全功能
 
 项目管理命令:
-  gen             生成项目结构和配置文件
-  init            初始化项目，克隆仓库
+  gen             在当前目录生成配置文件 (.easy_fix.yml)
+  init            根据配置文件初始化项目
   status          查看工作仓库状态
   
+分支管理命令:
+  add-branch      添加分支到配置文件
+  remove-branch   从配置文件移除分支  
+  list-branches   列出配置的分支
+  
 仓库操作命令:
-  switch <branch> 切换到指定分支
-  edit <file>     编辑工作仓库中的文件
-  commit <branch> [message] 提交更改
-  push <branch>   推送分支到远程仓库
+  start           创建子仓库基础内容
+  switch <branch> 切换到指定分支（自动添加新分支到配置）
+  patch <file>    生成补丁文件
+  commit [msg]    提交更改
+  push            推送分支到远程仓库
 
 构建管理命令:
-  create-obs      创建所有OBS包，并构建
-  create-euler    创建所有EulerMaker包，并构建
-  create-all      创建所有平台的包，并构建
+  create-obs      创建OBS包并构建
+  create-euler    创建EulerMaker包并构建
+  create-all      创建所有平台的包并构建
   query-obs       查询OBS构建状态
   query-euler     查询EulerMaker构建状态
   query-all       查询所有平台构建状态
-  build-obs       构建OBS包
-  build-euler     构建EulerMaker包
-  build-all       构建所有平台的包
-  query-quler-look-good 友好展示构建结果
+  build-obs       重新构建OBS包
+  build-euler     重新构建EulerMaker包
+  build-all       重新构建所有平台的包
+  query-euler-look-good 友好展示构建结果
 
-示例:
-  $0 create-all   # 创建所有包
-  $0 query-all    # 查询所有状态
-  $0 debug-euler  # 调试EulerMaker
+使用流程:
+  1. sudo ef install         # 安装到系统（包含自动补全）
+  2. ef gen                  # 生成配置文件
+  3. 编辑 .easy_fix.yml      # 只需填写一个 git URL
+  4. ef init                 # 初始化项目
+  5. ef start                # 创建子仓库
+  6. ef switch mybranch      # 切换分支（自动添加到配置）
+  7. ef push                 # 推送并构建
+
+配置说明:
+  - 只需在 .easy_fix.yml 中填写一个 git URL
+  - 系统会自动推导包名和基础目录
+  - 切换分支时自动添加新分支到配置文件
+  - 所有操作基于当前目录的配置文件
+  - 支持Tab键自动补全命令和参数
+
+自动补全功能:
+  - ef <Tab>              显示所有可用命令
+  - ef switch <Tab>       显示配置的分支列表
+  - ef remove-branch <Tab> 显示可删除的分支
+  - ef patch <Tab>        显示.patch文件
+  - ef commit <Tab>       显示常用提交信息
 EOF
             ;;
     esac
